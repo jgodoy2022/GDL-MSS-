@@ -2,7 +2,7 @@ import os
 import torch
 import soundfile as sf
 import musdb
-from src.models import UNet2D
+from src.models import get_unet_model
 
 def separate_sample():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -11,8 +11,8 @@ def separate_sample():
     output_dir = os.path.join("samples", "vocals")
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Cargar el checkpoint entrenado
-    model = UNet2D(in_channels=2, out_channels=2).to(device)
+    # 1. Cargar el modelo profesional e importar checkpoint
+    model = get_unet_model().to(device)
     model.load_state_dict(torch.load("unet_vocals.pth", map_location=device, weights_only=True))
     model.eval()
 
@@ -42,12 +42,16 @@ def separate_sample():
 
     mask = mask.squeeze(0).cpu()
 
-    # --- AJUSTE DE SUAVIZADO (SOFT MASKING) ---
-    # Elevamos la máscara a gamma < 1.0 para abrir los agudos/armónicos de la voz y quitar lo encajonado
-    gamma = 0.70
-    soft_mask = torch.pow(mask, gamma)
+    # --- REFINAMIENTO DE MÁSCARA (Wiener Filter / Soft Power Contrast) ---
+    # Aumenta el contraste de la máscara para silenciar residuos bajos
+    # y estabilizar las partes donde la instrumental resurge.
+    power = 1.5
+    soft_mask = torch.pow(mask, power)
+    
+    # Normalización para mantener la presencia de la voz sin atenuar agudos
+    soft_mask = soft_mask / (soft_mask + torch.pow(1.0 - mask, power) + 1e-8)
 
-    # 5. Aplicar la máscara suavizada
+    # 5. Aplicar la máscara refinada
     separated_stft = soft_mask * mix_stft
 
     # 6. Reconstrucción iSTFT
@@ -59,11 +63,11 @@ def separate_sample():
 
     # 7. Guardar WAVs
     sf.write(os.path.join(output_dir, "mixture.wav"), track.audio, sample_rate)
-    sf.write(os.path.join(output_dir, "vocals_estimated_soft.wav"), estimated_audio_np, sample_rate)
+    sf.write(os.path.join(output_dir, "vocals_estimated.wav"), estimated_audio_np, sample_rate)
     sf.write(os.path.join(output_dir, "vocals_original.wav"), original_vocals_np, sample_rate)
 
-    print(f"\n¡Separación con Soft-Masking completada!")
-    print(f"Escucha el nuevo audio generado: {output_dir}/vocals_estimated_soft.wav")
+    print(f"\n¡Separación completada con U-Net ResNet34 y Máscara Refinada!")
+    print(f"Escucha el nuevo audio generado: {output_dir}/vocals_estimated.wav")
 
 if __name__ == "__main__":
     separate_sample()
